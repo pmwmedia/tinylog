@@ -53,10 +53,12 @@ public final class JsonWriter implements Writer {
 	private StringBuilder builder;
 	private final Map<String, Token> jsonProperties;
 
-	private final byte[] newLineBytes;
-	private final byte[] commaBytes;
 	private final byte[] bracketOpenBytes;
 	private final byte[] bracketCloseBytes;
+	private final byte[] curlyBracketBytes;
+	private final byte[] spaceBytes;
+	private final byte[] lineFeedBytes;
+	private final byte[] carriageReturnBytes;
 
 	/**
 	 * @throws IOException              File not found or couldn't access file
@@ -74,10 +76,13 @@ public final class JsonWriter implements Writer {
 	public JsonWriter(final Map<String, String> properties) throws IOException {
 		jsonProperties = createTokens(properties);
 		charset = getCharset(properties);
-		newLineBytes = NEW_LINE.getBytes(charset);
-		commaBytes = ",".getBytes(charset);
+
 		bracketOpenBytes = "[".getBytes(charset);
 		bracketCloseBytes = "]".getBytes(charset);
+		curlyBracketBytes = "{".getBytes(charset);
+		spaceBytes = " ".getBytes(charset);
+		lineFeedBytes = "\n".getBytes(charset);
+		carriageReturnBytes = "\r".getBytes(charset);
 
 		String fileName = getFileName(properties);
 		File file = new File(fileName).getAbsoluteFile();
@@ -112,7 +117,10 @@ public final class JsonWriter implements Writer {
 			builder = this.builder;
 			builder.setLength(0);
 		}
-
+		removeLastOccurrenceOfIfAvailable(bracketCloseBytes);
+		if (!isFirstEntry()) {
+			builder.append(",");
+		}
 		addJsonObject(logEntry, builder);
 
 		byte[] data = builder.toString().getBytes(charset);
@@ -127,7 +135,6 @@ public final class JsonWriter implements Writer {
 	@Override
 	public void close() throws IOException {
 		writer.flush();
-		postProcessFile();
 		writer.close();
 	}
 
@@ -138,6 +145,22 @@ public final class JsonWriter implements Writer {
 			values.addAll(token.getRequiredLogEntryValues());
 		}
 		return values;
+	}
+
+	private boolean isFirstEntry() throws IOException {
+		if (randomAccessFile.length() == 0) {
+			return true;
+		} else {
+			byte[] bytes = new byte[BUFFER_SIZE];
+			randomAccessFile.seek(0);
+			int numberOfBytes = randomAccessFile.read(bytes);
+			for (int i = numberOfBytes - 1; i >= 0; i--) {
+				if (isCharacter(curlyBracketBytes, bytes, i)) {
+					return false;
+				}
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -170,17 +193,17 @@ public final class JsonWriter implements Writer {
 			escapeCharacter("\n", "\\n", builder, start);
 			escapeCharacter("\r", "\\r", builder, start);
 
-			builder.append("\" ");
+			builder.append("\"");
 
 			if (i + 1 < jsonProperties.size()) {
 				builder.append(",").append(NEW_LINE);
 			}
 		}
-		builder.append(NEW_LINE).append("\t},");
+		builder.append(NEW_LINE).append("\t}").append(NEW_LINE).append("]");
 	}
 
 	private void escapeCharacter(final String character, final String escapeWith, final StringBuilder stringBuilder,
-			final int startIndex) {
+								final int startIndex) {
 		for (
 			int index = stringBuilder.indexOf(character, startIndex);
 			index != -1;
@@ -208,8 +231,61 @@ public final class JsonWriter implements Writer {
 		return fileName;
 	}
 
-	private boolean isWhitespace(final byte character) {
-		return character == '\n' || character == '\r' || character == ' ';
+	/**
+	 * Removes the last occurrence of given character beginning from the end, if
+	 * it's available. Searches only for length of {@link #BUFFER_SIZE}
+	 *
+	 * @param character Character to remove
+	 * @return true if the character was removed
+	 * @throws IOException File not found or couldn't access file
+	 */
+	private boolean removeLastOccurrenceOfIfAvailable(final byte[] character) throws IOException {
+		long sizeToTruncate = 0;
+		boolean foundChar = false;
+
+		byte[] bytes = new byte[BUFFER_SIZE];
+		randomAccessFile.seek(Math.max(0, randomAccessFile.length() - BUFFER_SIZE));
+
+		for (int i = randomAccessFile.read(bytes) - character.length; i >= 0; i--) {
+
+			if (isCharacter(character, bytes, i)) {
+				sizeToTruncate += character.length;
+				foundChar = true;
+			} else if (foundChar && !isWhitespace(bytes, i)) {
+				break;
+			} else {
+				sizeToTruncate += 1;
+			}
+		}
+		if (!foundChar) {
+			return foundChar;
+		}
+		long newFileSize = randomAccessFile.length() - sizeToTruncate;
+		randomAccessFile.setLength(newFileSize);
+		randomAccessFile.seek(randomAccessFile.length());
+		return foundChar;
+	}
+
+	/**
+	 * The method checks for availability of a character in the RandomAccessFile.
+	 * Only checks for length of the {@link #BUFFER_SIZE}.
+	 *
+	 * @param character Character to check for availability
+	 * @param start     Offset where the search should begin
+	 * @return boolean if the character was found
+	 * @throws IOException File not found or couldn't access file
+	 */
+	private boolean isCharacterAvailable(final byte[] character, final long start) throws IOException {
+		byte[] bytes = new byte[BUFFER_SIZE];
+		randomAccessFile.seek(start);
+		int numberOfBytes = randomAccessFile.read(bytes);
+
+		for (int i = numberOfBytes - 1; i >= 0; i--) {
+			if (isCharacter(character, bytes, i)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -217,64 +293,41 @@ public final class JsonWriter implements Writer {
 	 * bracket and adds a comma instead. If it's a new file, appends an opening
 	 * bracket.
 	 *
-	 *
 	 * @param append Append Mode on or off
 	 * @throws IOException              Error reading or writing file
 	 * @throws IllegalArgumentException Invalid file format
 	 */
 	private void preProcessFile(final boolean append) throws IOException, IllegalArgumentException {
 		if (append && randomAccessFile.length() > 0) {
-			long sizeToTruncate = 0;
-			boolean foundClosingBracket = false;
-
-			byte[] bytes = new byte[BUFFER_SIZE];
-			randomAccessFile.seek(Math.max(0, randomAccessFile.length() - BUFFER_SIZE));
-			int numberOfBytes = randomAccessFile.read(bytes);
-
-			for (int i = numberOfBytes - 1; i >= 0; i--) {
-				byte letter = bytes[i];
-				sizeToTruncate += 1;
-
-				if (letter == ']') {
-					foundClosingBracket = true;
-				} else if (foundClosingBracket && !isWhitespace(letter)) {
-					sizeToTruncate -= 1;
-					break;
-				}
-			}
-
-			if (!foundClosingBracket) {
+			if (!isCharacterAvailable(bracketOpenBytes, 0)
+					|| !isCharacterAvailable(bracketCloseBytes, Math.max(0, randomAccessFile.length() - BUFFER_SIZE))) {
 				throw new IllegalArgumentException(
-						"Invalid JSON file. The file is missing a closing bracket for the array.");
+						"Invalid JSON file. The file is missing either an opening or a closing bracket for the array.");
 			}
-
-			long newFileSize = randomAccessFile.length() - sizeToTruncate;
-			randomAccessFile.setLength(newFileSize);
-			randomAccessFile.seek(randomAccessFile.length());
-			writer.write(commaBytes, commaBytes.length);
 		} else {
 			randomAccessFile.setLength(0);
 			writer.write(bracketOpenBytes, bracketOpenBytes.length);
+			writer.write(bracketCloseBytes, bracketCloseBytes.length);
 		}
 	}
 
-	/**
-	 * Post-processes the JSON file. Attempts to delete the trailing comma and
-	 * appends closing bracket which were handled in
-	 * {@link #preProcessFile(boolean)}.
-	 *
-	 * @throws IOException Error writing to file
-	 */
-	private void postProcessFile() throws IOException {
-		if (randomAccessFile.length() > 0) {
-			randomAccessFile.seek(randomAccessFile.length() - 1);
-			if (randomAccessFile.read() == ',') {
-				randomAccessFile.setLength(randomAccessFile.length() - 1);
-			}
-		}
+	private boolean isWhitespace(final byte[] data, final int position) {
+		return isCharacter(spaceBytes, data, position)
+				|| isCharacter(lineFeedBytes, data, position)
+				|| isCharacter(carriageReturnBytes, data, position);
+	}
 
-		writer.write(newLineBytes, newLineBytes.length);
-		writer.write(bracketCloseBytes, bracketCloseBytes.length);
+	private boolean isCharacter(final byte[] character, final byte[] data, final int position) {
+		if (data.length - position < character.length) {
+			return false;
+		} else {
+			for (int i = 0; i < character.length; ++i) {
+				if (character[i] != data[position + i]) {
+					return false;
+				}
+			}
+			return true;
+		}
 	}
 
 	private static Map<String, Token> createTokens(final Map<String, String> properties) {

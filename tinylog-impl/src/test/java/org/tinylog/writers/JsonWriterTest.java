@@ -31,6 +31,7 @@ import org.tinylog.util.FileSystem;
 import org.tinylog.util.LogEntryBuilder;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.Assert.assertArrayEquals;
 
 public final class JsonWriterTest {
 
@@ -59,7 +60,7 @@ public final class JsonWriterTest {
 		JsonWriter writer = new JsonWriter(properties);
 		writer.close();
 
-		String expectedFileContent = "[" + NEW_LINE + "]";
+		String expectedFileContent = "[]";
 		String resultingEntry = FileSystem.readFile(file);
 
 		assertThat(resultingEntry).isEqualTo(expectedFileContent);
@@ -328,6 +329,58 @@ public final class JsonWriterTest {
 				LogEntryValue.LINE);
 
 		assertThat(logValues).containsAll(expectedValues);
+	}
+
+	/**
+	 * Verifies that file is valid between log entries.
+	 *
+	 * @throws IOException Failed writing to file
+	 */
+	@Test
+	public void correctStateBetweenWrites() throws IOException {
+		String file = FileSystem.createTemporaryFile();
+
+		Map<String, String> properties = new HashMap<>();
+		properties.put("file", file);
+		properties.put("buffered", "false");
+		properties.put("append", "false");
+		properties.put("field.level", "level");
+
+		JsonWriter writer;
+		writer = new JsonWriter(properties);
+		LogEntry givenLogEntry = LogEntryBuilder.prefilled(JsonWriterTest.class).create();
+		writer.write(givenLogEntry);
+		String expectedFirstEntry = String.format("[%s\t{%s\t\t\"level\" : \"%s\"%s\t}%s]", NEW_LINE, NEW_LINE,
+				givenLogEntry.getLevel(), NEW_LINE, NEW_LINE);
+		String resultingEntry = FileSystem.readFile(file);
+		assertThat(resultingEntry).isEqualTo(expectedFirstEntry);
+		writer.close();
+	}
+
+	@Test
+	public void handleCharset() throws IOException {
+		String file = FileSystem.createTemporaryFile();
+
+		String charsetName = "utf-16le";
+		Charset utf16Charset = Charset.forName(charsetName);
+
+		Map<String, String> properties = new HashMap<>();
+		properties.put("file", file);
+		properties.put("buffered", "false");
+		properties.put("append", "false");
+		properties.put("charset", charsetName);
+		properties.put("field.message", "message");
+
+		JsonWriter writer;
+		writer = new JsonWriter(properties);
+		LogEntry givenLogEntry = LogEntryBuilder.prefilled(JsonWriterTest.class).create();
+		writer.write(givenLogEntry);
+		writer.close();
+
+		byte[] expectedResult = String.format("[%s\t{%s\t\t\"message\" : \"%s\"%s\t}%s]", NEW_LINE, NEW_LINE,
+				givenLogEntry.getMessage(), NEW_LINE, NEW_LINE).getBytes(charsetName);
+		byte[] resultingEntry = FileSystem.readFile(file, utf16Charset).getBytes(charsetName);
+		assertArrayEquals(resultingEntry, expectedResult);
 	}
 
 }
